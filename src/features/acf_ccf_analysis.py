@@ -91,7 +91,7 @@ def analyze_ccf(
     if target_col not in df.columns:
         raise ValueError(f"Target column '{target_col}' not found in DataFrame")
 
-    future_returns = df[target_col].shift(-target_horizon).pct_change(target_horizon)
+    future_returns = df[target_col].shift(-target_horizon).pct_change(target_horizon, fill_method=None)
     feature_data = df[feature_col].dropna()
 
     aligned_df = pd.DataFrame({

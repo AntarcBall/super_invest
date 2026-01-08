@@ -67,7 +67,7 @@ with tab1:
                 X_train, X_test = X[:split_index], X[split_index:]
                 y_train, y_test = y[:split_index], y[split_index:]
 
-                model = train_lgbm_model(X, y)
+                model = train_lgbm_model(X_train, y_train, X_test, y_test)
 
                 status.update(label="Step 6/6: Running Backtest...")
                 backtester = Backtester(model, X_test, y_test)
