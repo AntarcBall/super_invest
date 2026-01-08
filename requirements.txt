@@ -8,4 +8,5 @@ python-dotenv
 pandas-ta
 gnews
 pandas-datareader
-google-generativeai
+google-genai
+streamlit
