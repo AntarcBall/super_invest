@@ -10,3 +10,6 @@ gnews
 pandas-datareader
 google-genai
 streamlit
+torch
+shap
+matplotlib

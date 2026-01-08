@@ -2,7 +2,9 @@ import pandas as pd
 from src.features.feature_builder import add_fundamental_features, add_technical_features, add_macro_features
 from src.data.data_loader import get_stock_data
 
-def prepare_training_data(df: pd.DataFrame, horizon: int = 5, threshold: float = 0.02) -> tuple[pd.DataFrame, pd.Series]:
+from typing import Tuple
+
+def prepare_training_data(df: pd.DataFrame, horizon: int = 5, threshold: float = 0.02) -> Tuple[pd.DataFrame, pd.Series]:
     """
     Prepares the final training data by creating the target variable.
 
