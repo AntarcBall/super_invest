@@ -8,7 +8,7 @@ class Backtester:
     def __init__(self, model, X_test, y_test, initial_cash=100000):
         self.model = model
         self.X_test = X_test
-        self.y_test = y_test # For comparing signals with actuals
+        self.y_test = y_test
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.position = 0
@@ -19,36 +19,28 @@ class Backtester:
         Runs the backtesting simulation.
         """
         print("\n--- Running Backtest ---")
-        for date, features in self.X_test.iterrows():
-            # Get model's prediction
+        for i, (date, features) in enumerate(self.X_test.iterrows()):
             signal = self.model.predict(features.to_frame().T)[0]
             
-            # Get current price
-            current_price = features['Close']
-
-            # Execute trading logic
-            if signal == 1 and self.position == 0: # Buy signal and no position
+            current_price = self.X_test.iloc[i]['Close']
+            
+            if signal == 1 and self.position == 0:
                 self.position = self.cash / current_price
                 self.cash = 0
-                # print(f"{date}: BUY at {current_price:.2f}")
-
-            elif signal == 0 and self.position > 0: # Sell signal and have a position
+            
+            elif signal == 0 and self.position > 0:
                 self.cash = self.position * current_price
                 self.position = 0
-                # print(f"{date}: SELL at {current_price:.2f}")
-
-            # Record portfolio value
+            
             portfolio_value = self.cash + (self.position * current_price)
-            self.portfolio_history.append({'Date': date, 'PortfolioValue': portfolio_value})
+            self.portfolio_history.append({'Date': self.X_test.index[i], 'PortfolioValue': portfolio_value})
         
-        # At the end of the backtest, if still holding a position, liquidate it
         if self.position > 0:
-            final_price = self.X_test.iloc[-1]['Close']
+            final_price = self.X_test.iloc[0]['Close']
             self.cash = self.position * final_price
             self.position = 0
-            # Update the last portfolio value
             self.portfolio_history[-1]['PortfolioValue'] = self.cash
-
+        
         print("Backtest complete.")
         return pd.DataFrame(self.portfolio_history).set_index('Date')
 

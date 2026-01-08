@@ -27,21 +27,21 @@ PRETRAIN_CONFIG = {
 
     'sequence_length': 20,
 
-    'batch_size': 256,
+    'batch_size': 128,  # Reduced batch size for better generalization
 
-    'num_epochs': 50,
+    'num_epochs': 100,  # Increased epochs for more training
 
     'learning_rate': 0.001,
 
     'lstm_config': {
         'hidden_dim': 256,
         'num_layers': 2,
-        'dropout': 0.3,
+        'dropout': 0.2,  # Reduced dropout for better learning
         'embedding_dim': 128,
     },
 
-    'early_stopping_patience': 10,
-    'gradient_clip': 1.0,
+    'early_stopping_patience': 15,  # Increased patience
+    'gradient_clip': 5.0,  # Increased gradient clipping threshold
 
     'use_gpu': True,
     'device': 'cuda',

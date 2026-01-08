@@ -76,30 +76,38 @@ with tab1:
                         config_json = 'models/pretrained_config.json'
                         
                         if not os.path.exists(model_pth):
-                            st.warning("Pretrained model file not found. Running pretraining is recommended.")
-                            st.stop()
-                            
-                        pretrained_model, device = get_pretrained_model(model_pth, config_json)
-                        embedding_df = extract_embeddings_from_stock(pretrained_model, X, device=device)
-                        
-                        if embedding_df is not None:
-                            # Align X with embedding_df index
-                            X = pd.concat([X.loc[embedding_df.index], embedding_df], axis=1)
-                            # Align y with the new X
-                            y = y.loc[X.index]
-                            
-                            st.info(f"Added {len(embedding_df.columns)} market embedding features.")
+                            st.warning("Pretrained model file not found. Skipping embeddings.")
                         else:
-                            st.error("Failed to extract embeddings.")
-                            st.stop()
+                            pretrained_model, device = get_pretrained_model(model_pth, config_json)
+                            split_index = int(len(X) * (1 - test_size))
+                            X_test_only = X.iloc[split_index:]
+                            embedding_df = extract_embeddings_from_stock(pretrained_model, X_test_only, device)
+                            
+                            if embedding_df is not None:
+                                X_combined = pd.concat([X_test_only.loc[embedding_df.index], embedding_df], axis=1)
+                                X_test_final = X_combined.sort_index()
+                                y_test_final = y.loc[X_test_final.index]
+                                
+                                st.info(f"Added {len(embedding_df.columns)} market embedding features.")
+                                st.info(f"Test data dimension: {X_test_final.shape[0]}, samples: {len(y_test_final)}")
+                            else:
+                                st.error("Failed to extract embeddings.")
                     except Exception as e:
                         st.error(f"Error during embedding extraction: {e}")
-                        st.stop()
+                else:
+                    status.update(label="Step 4.5/6: Pretrained embeddings not enabled. Skipping.")
 
-                status.update(label="Step 5/6: Training Model...")
+                status.update(label="Step 5/6: Preparing Training Data...")
                 split_index = int(len(X) * (1 - test_size))
-                X_train, X_test = X[:split_index], X[split_index:]
-                y_train, y_test = y[:split_index], y[split_index:]
+                
+                if use_pretrained_embeddings and 'X_test_final' in locals():
+                    X_train = X.iloc[:split_index]
+                    X_test = X_test_final
+                    y_train = y_test[:split_index]
+                    y_test = y_test_final
+                else:
+                    X_train, X_test = X[:split_index], X[split_index:]
+                    y_train, y_test = y[:split_index], y[split_index:]
 
                 model = train_lgbm_model(X_train, y_train, X_test, y_test)
 

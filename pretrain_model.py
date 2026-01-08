@@ -15,6 +15,7 @@ import numpy as np
 from datetime import datetime
 from tqdm import tqdm
 import argparse
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 
 import sys
 sys.path.insert(0, '/home/car/stock')
@@ -48,30 +49,84 @@ class PretrainLSTM(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
+        # Add batch normalization for more stable training
+        self.input_norm = nn.BatchNorm1d(input_dim)
+
         self.lstm = nn.LSTM(
             input_dim, hidden_dim, num_layers,
-            batch_first=True, dropout=dropout if num_layers > 1 else 0
+            batch_first=True, dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True  # Use bidirectional LSTM for better context
         )
 
+        # Since we're using bidirectional LSTM, the output size is doubled
+        self.lstm_output_dim = hidden_dim * 2
+
+        # Add a few more layers for better feature extraction
+        self.intermediate_layer = nn.Linear(self.lstm_output_dim, hidden_dim)
+        self.intermediate_norm = nn.BatchNorm1d(hidden_dim)
+        self.intermediate_activation = nn.ReLU()
+
         self.embedding_layer = nn.Linear(hidden_dim, embedding_dim)
+        self.embedding_norm = nn.BatchNorm1d(embedding_dim)
         self.classifier = nn.Linear(embedding_dim, 2)
 
         self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
 
     def forward(self, x):
+        # Apply batch norm to input (reshape for batch norm)
+        batch_size, seq_len, features = x.size()
+        x = x.contiguous().view(-1, features)
+        x = self.input_norm(x)
+        x = x.view(batch_size, seq_len, features)
+
         lstm_out, (h_n, c_n) = self.lstm(x)
-        last_hidden = lstm_out[:, -1, :]
-        embeddings = self.dropout(last_hidden)
-        embeddings = self.embedding_layer(embeddings)
+        last_hidden = lstm_out[:, -1, :]  # Get the last time step
+
+        # Process through intermediate layer
+        last_hidden = self.intermediate_layer(last_hidden)
+        last_hidden = last_hidden.permute(0, 1)  # For batch norm
+        last_hidden = self.intermediate_norm(last_hidden)
+        last_hidden = last_hidden.permute(0, 1)  # Reshape back
+        last_hidden = self.intermediate_activation(last_hidden)
+        last_hidden = self.dropout(last_hidden)
+
+        # Generate embeddings
+        embeddings = self.embedding_layer(last_hidden)
+        embeddings = embeddings.permute(0, 1)  # For batch norm
+        embeddings = self.embedding_norm(embeddings)
+        embeddings = embeddings.permute(0, 1)  # Reshape back
+        embeddings = self.dropout(embeddings)
+
         output = self.classifier(embeddings)
 
         return output, embeddings
 
     def get_embeddings(self, x):
+        # Apply batch norm to input (reshape for batch norm)
+        batch_size, seq_len, features = x.size()
+        x = x.contiguous().view(-1, features)
+        x = self.input_norm(x)
+        x = x.view(batch_size, seq_len, features)
+
         lstm_out, _ = self.lstm(x)
-        last_hidden = lstm_out[:, -1, :]
-        embeddings = self.dropout(last_hidden)
-        embeddings = self.embedding_layer(embeddings)
+        last_hidden = lstm_out[:, -1, :]  # Get the last time step
+
+        # Process through intermediate layer
+        last_hidden = self.intermediate_layer(last_hidden)
+        last_hidden = last_hidden.permute(0, 1)  # For batch norm
+        last_hidden = self.intermediate_norm(last_hidden)
+        last_hidden = last_hidden.permute(0, 1)  # Reshape back
+        last_hidden = self.intermediate_activation(last_hidden)
+        last_hidden = self.dropout(last_hidden)
+
+        # Generate embeddings
+        embeddings = self.embedding_layer(last_hidden)
+        embeddings = embeddings.permute(0, 1)  # For batch norm
+        embeddings = self.embedding_norm(embeddings)
+        embeddings = embeddings.permute(0, 1)  # Reshape back
+        embeddings = self.dropout(embeddings)
+
         return embeddings
 
 
@@ -176,8 +231,18 @@ def train_pretrained_model():
         embedding_dim=config['lstm_config']['embedding_dim']
     ).to(device)
 
-    criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor([0.5, 0.5]).to(device))
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
+    # Use a more sophisticated optimizer with cyclical learning rates
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5, betas=(0.9, 0.999))
+
+    # Add learning rate scheduler - cyclical learning rate schedule
+    scheduler = torch.optim.lr_scheduler.CyclicLR(
+        optimizer,
+        base_lr=config['learning_rate']/10,
+        max_lr=config['learning_rate']*10,
+        step_size_up=5,  # epochs to go from base to max
+        mode='triangular2',  # reduces max_lr by half each cycle
+        cycle_momentum=False  # disable momentum cycling
+    )
 
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -187,7 +252,7 @@ def train_pretrained_model():
 
     start_epoch = 0
     best_loss = float('inf')
-    
+
     checkpoint_files = [f for f in os.listdir(config['checkpoint_dir']) if f.endswith('.pth')]
     if checkpoint_files:
         latest_checkpoint = max([os.path.join(config['checkpoint_dir'], f) for f in checkpoint_files], key=os.path.getmtime)
@@ -195,6 +260,8 @@ def train_pretrained_model():
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_loss = checkpoint.get('loss', float('inf'))
         print(f"Resuming from epoch {start_epoch}")
@@ -227,6 +294,10 @@ def train_pretrained_model():
 
         avg_loss = total_loss / num_batches
         print(f"Epoch {epoch+1}/{config['num_epochs']} - Loss: {avg_loss:.4f}")
+        print(f"Current LR: {optimizer.param_groups[0]['lr']:.6f}")
+
+        # Step the scheduler - for CyclicLR, we step after each epoch
+        scheduler.step()
 
         if (epoch + 1) % 5 == 0:
             checkpoint_path = os.path.join(config['checkpoint_dir'], f"checkpoint_epoch_{epoch+1}.pth")
@@ -234,6 +305,7 @@ def train_pretrained_model():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'loss': avg_loss,
             }, checkpoint_path)
             print(f"  -> Saved regular checkpoint: {checkpoint_path}")
@@ -246,6 +318,7 @@ def train_pretrained_model():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'loss': best_loss,
                 'input_dim': input_dim,
                 'config': config
