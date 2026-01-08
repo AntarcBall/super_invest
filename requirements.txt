@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+yfinance
+requests
+python-dotenv
+pandas-ta
+gnews
+pandas-datareader
+google-generativeai

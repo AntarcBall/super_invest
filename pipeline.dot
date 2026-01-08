@@ -1,0 +1,106 @@
+digraph Stock_Prediction_Pipeline {
+    // Graph Attributes
+    rankdir=LR;
+    splines=ortho;
+    node [shape=box, style="rounded,filled", fillcolor="#E5F5FD", margin="0.2,0.1"];
+    edge [style=solid, color="#333333"];
+    graph [label="Stock Buy/Sell Decision Model Pipeline", labelloc=t, fontsize=20, fontname="Helvetica-Bold"];
+
+    // 1. Data Ingestion Cluster
+    subgraph cluster_ingestion {
+        label = "1. Data Ingestion";
+        style = "filled,rounded";
+        fillcolor = "#F0F8FF";
+
+        yf_api [label="Yahoo Finance API\n(Stock OHLCV)"];
+        gnews_api [label="Google News API\n(News Articles)"];
+        fred_api [label="FRED API\n(Interest Rates)"];
+    }
+
+    // 2. Feature Engineering Cluster
+    subgraph cluster_features {
+        label = "2. Feature Engineering";
+        style = "filled,rounded";
+        fillcolor = "#F0FFF0";
+
+        tech_features [label="Technical Indicators\n(RSI, MACD, SMA, BBands)"];
+        fund_features [label="Fundamental Proxies\n(P/E, Market Cap)"];
+        sentiment_features [label="LLM Sentiment Analysis\n(Gemini API)"];
+        macro_features [label="Macroeconomic Data\n(Interest Rate)"];
+    }
+
+    // 3. Data Preparation
+    subgraph cluster_prep {
+        label = "3. Model Preparation";
+        style = "filled,rounded";
+        fillcolor = "#FFF5EE";
+
+        combine_features [label="Combine All Features"];
+        create_target [label="Create Target Variable\n(e.g., Price > 3% in 10 days?)"];
+        prepare_data [label="Prepare Final (X, y) Dataset"];
+    }
+
+    // 4. Model Training
+    subgraph cluster_training {
+        label = "4. Model Training";
+        style = "filled,rounded";
+        fillcolor = "#FAFAD2";
+
+        split_data [label="Time-Series Split\n(Train & Test Sets)"];
+        train_model [label="Train LightGBM\nClassifier Model"];
+        trained_model [label="Trained Model", shape=cylinder, fillcolor="#FFD700"];
+    }
+
+    // 5. Backtesting
+    subgraph cluster_backtesting {
+        label = "5. Backtesting";
+        style = "filled,rounded";
+        fillcolor = "#FFE4E1";
+
+        backtest_engine [label="Backtesting Engine"];
+        run_simulation [label="Simulate Trades on\nTest Set"];
+        portfolio_history [label="Portfolio History", shape=document];
+    }
+    
+    // 6. Performance Analysis
+    subgraph cluster_analysis {
+        label = "6. Performance Analysis";
+        style = "filled,rounded";
+        fillcolor = "#E6E6FA";
+
+        calc_metrics [label="Calculate Metrics\n(Sharpe, Drawdown)"];
+        benchmark [label="Compare vs.\n'Buy & Hold'"];
+        final_report [label="Final Report", shape=note, fillcolor="#98FB98"];
+    }
+
+
+    // --- Define Workflow Edges ---
+
+    // Ingestion -> Feature Engineering
+    yf_api -> tech_features;
+    yf_api -> fund_features;
+    gnews_api -> sentiment_features;
+    fred_api -> macro_features;
+
+    // Feature Engineering -> Data Preparation
+    {tech_features, fund_features, sentiment_features, macro_features} -> combine_features;
+    combine_features -> create_target;
+    create_target -> prepare_data;
+
+    // Preparation -> Training
+    prepare_data -> split_data;
+    split_data -> train_model;
+    train_model -> trained_model;
+
+    // Training -> Backtesting
+    trained_model -> backtest_engine;
+    split_data -> backtest_engine [label="Test Data"];
+    backtest_engine -> run_simulation;
+    run_simulation -> portfolio_history;
+
+    // Backtesting -> Analysis
+    portfolio_history -> calc_metrics;
+    calc_metrics -> final_report;
+    split_data -> benchmark [label="Test Prices"];
+    benchmark -> final_report;
+}
