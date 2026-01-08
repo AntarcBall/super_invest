@@ -6,9 +6,15 @@ from src.features.feature_builder import add_fundamental_features, add_technical
 from src.features.acf_ccf_analysis import analyze_acf, analyze_ccf, multi_feature_ccf_analysis, suggest_lag_features, plot_acf, plot_ccf, get_summary_statistics
 from src.models.prepare_data import prepare_training_data
 from src.models.train_model import train_lgbm_model
+from src.models.pretrained_utils import add_pretrained_embeddings, load_pretrained_model, extract_embeddings_from_stock
 from src.backtesting.engine import Backtester
 from src.backtesting.metrics import calculate_sharpe_ratio, calculate_max_drawdown
 import datetime
+import os
+
+@st.cache_resource
+def get_pretrained_model(model_path, config_path):
+    return load_pretrained_model(model_path, config_path)
 
 st.set_page_config(layout="wide")
 
@@ -29,6 +35,7 @@ with st.sidebar:
     horizon = st.slider("Prediction Horizon (Days)", 1, 30, 10, 1)
     threshold = st.slider("Buy Signal Threshold (%)", 1.0, 10.0, 3.0, 0.5) / 100.0
     use_acf_ccf_features = st.checkbox("Use ACF/CCF-Based Lag Features", value=True, help="Enhanced feature engineering using statistical analysis")
+    use_pretrained_embeddings = st.checkbox("Use Pretrained Market Embeddings", value=False, help="Use embeddings from model trained on major stocks (requires pretrained model)")
 
     run_button = st.button("Run Backtest")
 
@@ -61,6 +68,33 @@ with tab1:
 
                 status.update(label="Step 4/6: Preparing Training Data...")
                 X, y = prepare_training_data(data, horizon=horizon, threshold=threshold)
+
+                if use_pretrained_embeddings:
+                    status.update(label="Step 4.5/6: Adding Pretrained Embeddings...")
+                    try:
+                        model_pth = 'models/pretrained_lstm.pth'
+                        config_json = 'models/pretrained_config.json'
+                        
+                        if not os.path.exists(model_pth):
+                            st.warning("Pretrained model file not found. Running pretraining is recommended.")
+                            st.stop()
+                            
+                        pretrained_model, device = get_pretrained_model(model_pth, config_json)
+                        embedding_df = extract_embeddings_from_stock(pretrained_model, X, device=device)
+                        
+                        if embedding_df is not None:
+                            # Align X with embedding_df index
+                            X = pd.concat([X.loc[embedding_df.index], embedding_df], axis=1)
+                            # Align y with the new X
+                            y = y.loc[X.index]
+                            
+                            st.info(f"Added {len(embedding_df.columns)} market embedding features.")
+                        else:
+                            st.error("Failed to extract embeddings.")
+                            st.stop()
+                    except Exception as e:
+                        st.error(f"Error during embedding extraction: {e}")
+                        st.stop()
 
                 status.update(label="Step 5/6: Training Model...")
                 split_index = int(len(X) * (1 - test_size))
