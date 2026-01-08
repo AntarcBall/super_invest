@@ -4,6 +4,7 @@ import pandas_ta as ta
 import numpy as np
 from src.data.data_loader import get_stock_data
 from src.data.macro_loader import get_interest_rate_data
+from src.features.acf_ccf_analysis import analyze_acf, analyze_ccf, multi_feature_ccf_analysis, suggest_lag_features
 
 def add_fundamental_features(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     try:
@@ -84,6 +85,54 @@ def add_lagged_features(df: pd.DataFrame, target_col: str = 'Close', max_lag: in
 
     except Exception as e:
         print(f"ERROR: Could not add lagged features: {e}")
+        return df
+
+def add_acf_ccf_lagged_features(df: pd.DataFrame, target_col: str = 'Close', max_lag: int = 10, target_horizon: int = 5, min_correlation: float = 0.15) -> pd.DataFrame:
+    """
+    Enhanced lag feature engineering using ACF/CCF analysis for optimal lag selection.
+
+    Uses statistical analysis to identify the most predictive lags for each feature,
+    rather than using a fixed lag for all features.
+
+    Args:
+        df: DataFrame with features.
+        target_col: The column to predict (future return based on Close).
+        max_lag: Maximum number of days to look back.
+        target_horizon: How many days ahead to predict.
+        min_correlation: Minimum correlation threshold for adding a lag feature.
+    """
+    print("INFO: Starting ACF/CCF-based lag feature engineering...")
+    try:
+        features_to_analyze = ['RSI_14', 'MACD_12_26_9', 'ATR_14', 'VIX', 'Volume', 'SMA_50', 'SMA_200', 'BBM_14_2_2', 'BBU_14_2_2', 'BBL_14_2_2']
+        available_features = [f for f in features_to_analyze if f in df.columns]
+
+        if not available_features:
+            print("WARNING: No features available for CCF analysis")
+            return df
+
+        ccf_results = multi_feature_ccf_analysis(
+            df, available_features, target_col, nlags=max_lag, target_horizon=target_horizon
+        )
+
+        suggestions = suggest_lag_features(ccf_results, min_correlation=min_correlation, max_features=20)
+
+        added_features = []
+        for suggestion in suggestions:
+            feature = suggestion['feature']
+            lag = suggestion['lag']
+            col_name = f"{feature}_lag_{lag}"
+
+            if feature in df.columns:
+                df[col_name] = df[feature].shift(lag)
+                added_features.append(col_name)
+                print(f"   -> Added {col_name} (Corr: {suggestion['correlation']:.3f})")
+
+        df.fillna(0, inplace=True)
+        print(f"OK: ACF/CCF-based lag features added. Total: {len(added_features)} features.")
+        return df
+
+    except Exception as e:
+        print(f"ERROR: Could not add ACF/CCF lagged features: {e}")
         return df
 
 def add_volatility_features(df: pd.DataFrame) -> pd.DataFrame:
