@@ -2,7 +2,11 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 from src.data.data_loader import get_stock_data
-from src.features.feature_builder import add_fundamental_features, add_technical_features, add_macro_features, add_volatility_features, add_lagged_features, add_acf_ccf_lagged_features
+from src.backtesting.agent import TradingAgent
+from src.backtesting.optimizer import ParameterOptimizer
+from src.features.regime import RegimeDetector
+from src.data.earnings_loader import EarningsLoader
+from src.features.feature_builder import add_fundamental_features, add_technical_features, add_macro_features, add_volatility_features, add_lagged_features, add_acf_ccf_lagged_features, add_earnings_features
 from src.features.acf_ccf_analysis import analyze_acf, analyze_ccf, multi_feature_ccf_analysis, suggest_lag_features, plot_acf, plot_ccf, get_summary_statistics
 from src.models.prepare_data import prepare_training_data
 from src.models.train_model import train_lgbm_model
@@ -43,6 +47,15 @@ with st.sidebar:
     st.divider()
 
     st.header("🧠 Model Options")
+    
+    st.subheader("Data Sources")
+    use_earnings = st.checkbox("Include Earnings Surprises (FMP)", value=True, help="Requires FMP_API_KEY")
+    use_macro = st.checkbox("Include Macro Data (FRED)", value=True, help="Federal Funds Rate")
+    use_volatility = st.checkbox("Include Volatility (VIX/ATR)", value=True)
+    use_regime = st.checkbox("Use Regime Detection (HMM)", value=True, help="Detect Bull/Bear markets")
+    
+    st.divider()
+    
     use_acf_ccf_features = st.checkbox("Use ACF/CCF-Based Lag Features", value=True, help="Enhanced feature engineering using statistical analysis")
     use_pretrained_embeddings = st.checkbox("Use Pretrained Market Embeddings", value=False, help="Use embeddings from model trained on 91 major stocks (requires pretrained model)")
 
@@ -52,6 +65,100 @@ with st.sidebar:
         st.success("⚡ Mixed precision training enabled")
 
     run_button = st.button("🚀 Run Backtest", type="primary")
+
+with tab2:
+    st.header("🤖 Model Training & Optimization")
+    st.info("Optimize the Intelligent Agent's parameters using Bayesian Optimization (Optuna).")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        n_trials = st.slider("Optimization Trials", 5, 100, 20, 5, help="More trials = better results but slower")
+    with col2:
+        opt_initial_cash = st.number_input("Initial Cash for Optimization", value=100000)
+
+    if st.button("🚀 Start Optimization Loop", type="primary"):
+        with st.status("Running Optimization...", expanded=True) as status:
+            # 1. Load & Prepare Data
+            status.update(label="Loading and preparing data...")
+            data = get_stock_data(ticker, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+            
+            if data.empty:
+                st.error("No data found.")
+                status.update(state="error")
+            else:
+                if data.index.tz is not None:
+                    data.index = data.index.tz_localize(None)
+                
+                # Feature Engineering based on flags
+                data = add_fundamental_features(data, ticker)
+                data = add_technical_features(data)
+                
+                if use_macro:
+                    data = add_macro_features(data)
+                if use_volatility:
+                    data = add_volatility_features(data)
+                if use_earnings:
+                    data = add_earnings_features(data, ticker)
+                
+                if use_acf_ccf_features:
+                    data = add_acf_ccf_lagged_features(data, target_horizon=horizon)
+                else:
+                    data = add_lagged_features(data)
+                    
+                if use_regime:
+                    status.update(label="Detecting Market Regimes...")
+                    rd = RegimeDetector()
+                    rd.fit(data)
+                    regimes = rd.predict_regime(data)
+                    data = data.join(regimes)
+                    data['Regime'] = data['Regime'].ffill().bfill()
+
+                # Prepare Training Data
+                X, y = prepare_training_data(data, horizon=horizon, threshold=threshold)
+                
+                # Split (Train only for optimization)
+                split_index = int(len(X) * (1 - test_size))
+                X_train = X.iloc[:split_index]
+                y_train = y[:split_index]
+                
+                status.update(label="Training Base Model...")
+                model = train_lgbm_model(X_train, y_train, X_train, y_train) # Eval on train for speed/sanity
+                
+                status.update(label=f"Running Optuna ({n_trials} trials)...")
+                optimizer = ParameterOptimizer(model, X_train, y_train, opt_initial_cash)
+                best_params = optimizer.optimize_params(n_trials=n_trials)
+                
+                status.update(label="Optimization Complete!", state="complete")
+                
+                # Save to session state
+                st.session_state['optimized_params'] = best_params
+                st.session_state['trained_model'] = model
+                st.session_state['feature_data'] = data # Reuse data
+                
+                st.success(f"Optimization finished! Best Sharpe: {best_params.get('sharpe', 'N/A')}")
+                
+                # Display Results
+                st.subheader("🏆 Optimized Parameters")
+                
+                # Format weights for display
+                weights = {k: v for k, v in best_params.items() if k.startswith('w_')}
+                # Normalize
+                total = sum(weights.values())
+                if total > 0:
+                    weights = {k: v/total for k, v in weights.items()}
+                
+                thresholds = {k: v for k, v in best_params.items() if k.startswith('thresh_')}
+                
+                res_col1, res_col2 = st.columns(2)
+                with res_col1:
+                    st.caption("Agent Weights")
+                    st.json(weights)
+                    st.bar_chart(pd.Series(weights))
+                with res_col2:
+                    st.caption("Decision Thresholds")
+                    st.json(thresholds)
+                
+                st.info("These parameters are now saved and will be used in the 'Backtest' tab.")
 
 with tab1:
     st.header("📊 Backtesting Engine")
@@ -76,16 +183,31 @@ with tab1:
                 status.update(label="Step 2/6: Building Features...")
                 if data.index.tz is not None:
                     data.index = data.index.tz_localize(None)
+                
+                # Feature Engineering based on flags
                 data = add_fundamental_features(data, ticker)
                 data = add_technical_features(data)
-                data = add_macro_features(data)
-                data = add_volatility_features(data)
-
+                
+                if use_macro:
+                    data = add_macro_features(data)
+                if use_volatility:
+                    data = add_volatility_features(data)
+                if use_earnings:
+                    data = add_earnings_features(data, ticker)
+                
                 status.update(label="Step 3/6: Adding Lagged Features...")
                 if use_acf_ccf_features:
                     data = add_acf_ccf_lagged_features(data, target_horizon=horizon)
                 else:
                     data = add_lagged_features(data)
+                    
+                if use_regime:
+                    status.update(label="Detecting Market Regimes...")
+                    rd = RegimeDetector()
+                    rd.fit(data)
+                    regimes = rd.predict_regime(data)
+                    data = data.join(regimes)
+                    data['Regime'] = data['Regime'].ffill().bfill()
 
                 status.update(label="Step 4/6: Preparing Training Data...")
                 X, y = prepare_training_data(data, horizon=horizon, threshold=threshold)
@@ -142,10 +264,39 @@ with tab1:
                 model = train_lgbm_model(X_train, y_train, X_test, y_test)
 
                 status.update(label="Step 6/6: Running Backtest...")
-                backtester = Backtester(model, X_test, y_test)
+                
+                # Check for optimized params
+                if 'optimized_params' in st.session_state:
+                    params = st.session_state['optimized_params']
+                    st.success("Using Optimized Parameters from Training Tab")
+                    weights = {
+                        'model': params['w_model'],
+                        'trend': params['w_trend'],
+                        'momentum': params['w_momentum'],
+                        'volatility': params['w_volatility'],
+                        'macro': params['w_macro'],
+                        'sentiment': 0.05 # Default if not optimized
+                    }
+                    # Normalize
+                    tot = sum(weights.values())
+                    if tot > 0: weights = {k: v/tot for k, v in weights.items()}
+                    
+                    thresholds = {
+                        'buy': params['thresh_buy'],
+                        'sell': params['thresh_sell'],
+                        'strong_buy': params['thresh_buy'] + 0.15,
+                        'strong_sell': params['thresh_sell'] - 0.15
+                    }
+                    agent = TradingAgent(model, weights=weights, thresholds=thresholds)
+                else:
+                    st.info("Using Default Parameters (Run Optimization in Tab 2 to improve)")
+                    agent = TradingAgent(model) # Defaults
+                
+                backtester = Backtester(agent, X_test, y_test)
                 portfolio_df = backtester.run_backtest()
 
                 status.update(label="Pipeline complete!", state="complete")
+
 
                 st.success("✅ Backtest finished. See results below.")
 

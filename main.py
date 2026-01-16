@@ -1,10 +1,13 @@
 from src.data.data_loader import get_stock_data
-from src.features.feature_builder import add_fundamental_features, add_technical_features, add_macro_features
+from src.features.feature_builder import add_fundamental_features, add_technical_features, add_macro_features, add_volatility_features
 from src.models.prepare_data import prepare_training_data
 from src.models.train_model import train_lgbm_model
 from src.backtesting.engine import Backtester
+from src.backtesting.agent import TradingAgent
+from src.backtesting.optimizer import ParameterOptimizer
 from src.backtesting.metrics import calculate_sharpe_ratio, calculate_max_drawdown
 import pandas as pd
+import numpy as np
 
 def main():
     """
@@ -15,10 +18,11 @@ def main():
     START_DATE = '2020-01-01'
     END_DATE = '2024-01-01'
     TEST_SIZE = 0.2
-    HORIZON = 10 # Predict 10 days ahead
-    THRESHOLD = 0.03 # 3% price increase for a 'Buy' signal
+    HORIZON = 10 
+    THRESHOLD = 0.03
     INITIAL_CASH = 100000
-    RISK_FREE_RATE = 0.02 # Annualized
+    RISK_FREE_RATE = 0.02
+    DO_OPTIMIZATION = True # Toggle to enable Optuna Optimization
 
     print(f"--- Starting Pipeline for {TICKER} ---")
 
@@ -36,6 +40,7 @@ def main():
     data = add_fundamental_features(data, TICKER)
     data = add_technical_features(data)
     data = add_macro_features(data)
+    data = add_volatility_features(data)
     
     # 3. Prepare Training Data
     X, y = prepare_training_data(data, horizon=HORIZON, threshold=THRESHOLD)
@@ -46,14 +51,61 @@ def main():
     y_train, y_test = y[:split_index], y[split_index:]
     
     # 5. Train Model
-    model = train_lgbm_model(X, y) # Pass the full dataset for training logic
+    model = train_lgbm_model(X_train, y_train, X_test, y_test)
     
-    # 6. Run Backtest
-    backtester = Backtester(model, X_test, y_test, initial_cash=INITIAL_CASH)
+    weights = {
+        'model': 0.5,
+        'trend': 0.15,
+        'momentum': 0.1,
+        'volatility': 0.1,
+        'macro': 0.1,
+        'sentiment': 0.05
+    }
+    thresholds = None
+
+    if DO_OPTIMIZATION:
+        print("\n--- Running Parameter Optimization (Optuna) ---")
+        # Initialize Optimizer with Training Data
+        optimizer = ParameterOptimizer(model, X_train, y_train, INITIAL_CASH)
+        
+        # Option A: Simple Optimization on Train set
+        best_params = optimizer.optimize_params(n_trials=20)
+        
+        # Option B: Walk-Forward Optimization (Robustness Check)
+        # oos_performance = optimizer.run_walk_forward_optimization(n_splits=3, n_trials=10)
+        # print("WFO Sharpe Ratio:", calculate_sharpe_ratio(oos_performance))
+        
+        # Apply Best Parameters
+        weights = {
+            'model': best_params['w_model'],
+            'trend': best_params['w_trend'],
+            'momentum': best_params['w_momentum'],
+            'volatility': best_params['w_volatility'],
+            'macro': best_params['w_macro'],
+            'sentiment': 0.0
+        }
+        total = sum(weights.values())
+        if total > 0:
+            for k in weights: weights[k] /= total
+            
+        thresholds = {
+            'buy': best_params['thresh_buy'],
+            'sell': best_params['thresh_sell'],
+            'strong_buy': best_params['thresh_buy'] + 0.15,
+            'strong_sell': best_params['thresh_sell'] - 0.15
+        }
+    
+    print("\n--- Initializing Agent with Optimized Parameters ---")
+    print(f"Weights: {weights}")
+    print(f"Thresholds: {thresholds}")
+
+    agent = TradingAgent(model, weights=weights, thresholds=thresholds)
+    
+    backtester = Backtester(agent, X_test, y_test, initial_cash=INITIAL_CASH)
     portfolio_df = backtester.run_backtest()
     
-    # 7. Analyze Performance
     print("\n--- Final Performance Analysis ---")
+
     
     # Strategy Performance
     final_value_strategy = portfolio_df['PortfolioValue'].iloc[-1]
