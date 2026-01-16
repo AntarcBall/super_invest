@@ -16,6 +16,7 @@ from datetime import datetime
 from tqdm import tqdm
 import argparse
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.cuda.amp import autocast, GradScaler  # For mixed precision training
 
 import sys
 sys.path.insert(0, '/home/car/stock')
@@ -220,7 +221,14 @@ def train_pretrained_model():
     print(f"Feature dimension: {X_all.shape[2]}")
 
     dataset = MultiStockDataset(X_all, y_all)
-    dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True, num_workers=4)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=8,  # Increased workers for faster data loading
+        pin_memory=True,  # Enable faster GPU transfer
+        persistent_workers=True  # Keep workers alive between epochs
+    )
 
     input_dim = X_all.shape[2]
     model = PretrainLSTM(
@@ -244,6 +252,9 @@ def train_pretrained_model():
         cycle_momentum=False  # disable momentum cycling
     )
 
+    # Initialize gradient scaler for mixed precision training
+    scaler = GradScaler()
+
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     print(f"DEBUG: Config keys: {config.keys()}")
@@ -262,6 +273,8 @@ def train_pretrained_model():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_loss = checkpoint.get('loss', float('inf'))
         print(f"Resuming from epoch {start_epoch}")
@@ -279,15 +292,24 @@ def train_pretrained_model():
 
             optimizer.zero_grad()
 
-            outputs, _ = model(batch_seqs)
-            loss = criterion(outputs, batch_targets)
+            # Use autocast for mixed precision
+            with autocast():
+                outputs, _ = model(batch_seqs)
+                loss = criterion(outputs, batch_targets)
 
-            loss.backward()
+            # Scale loss and backpropagate
+            scaler.scale(loss).backward()
 
             if config['gradient_clip'] > 0:
+                # Unscales the gradients of optimizer's assigned params in-place
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip'])
 
-            optimizer.step()
+            # Optimizer step with scaler
+            scaler.step(optimizer)
+
+            # Update the scale for next iteration
+            scaler.update()
 
             total_loss += loss.item()
             num_batches += 1
@@ -306,6 +328,7 @@ def train_pretrained_model():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
                 'loss': avg_loss,
             }, checkpoint_path)
             print(f"  -> Saved regular checkpoint: {checkpoint_path}")
@@ -319,6 +342,7 @@ def train_pretrained_model():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
                 'loss': best_loss,
                 'input_dim': input_dim,
                 'config': config
