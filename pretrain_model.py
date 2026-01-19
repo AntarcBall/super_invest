@@ -255,6 +255,8 @@ def train_pretrained_model():
     # Initialize gradient scaler for mixed precision training
     scaler = GradScaler()
 
+    criterion = nn.CrossEntropyLoss()
+
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     print(f"DEBUG: Config keys: {config.keys()}")
